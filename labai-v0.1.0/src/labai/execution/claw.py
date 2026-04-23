@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 import json
 import os
@@ -209,6 +210,11 @@ class ClawRuntimeAdapter:
             request.prompt,
             preferred_model=request.preferred_model,
         )
+        progress_reporter = request.progress_reporter
+        if progress_reporter is not None:
+            progress_reporter.emit(
+                f"model selected: runtime=claw model={selected_model}"
+            )
         command = build_claw_prompt_command(
             config,
             binary_path,
@@ -216,12 +222,23 @@ class ClawRuntimeAdapter:
             model=selected_model,
         )
 
-        completed = _run_command(
-            command,
-            cwd=config.workspace.active_workspace_root,
-            env=_build_runtime_env(config),
-            timeout_seconds=config.claw.ask_timeout_seconds,
-        )
+        if progress_reporter is not None:
+            progress_reporter.emit(f"model call started: runtime=claw model={selected_model}")
+        with (
+            progress_reporter.heartbeat(
+                waiting_message="still waiting for model response... {elapsed:.0f}s",
+                failure_message="model call failed: runtime=claw",
+                completion_message="model call completed: runtime=claw",
+            )
+            if progress_reporter is not None
+            else nullcontext()
+        ):
+            completed = _run_command(
+                command,
+                cwd=config.workspace.active_workspace_root,
+                env=_build_runtime_env(config),
+                timeout_seconds=config.claw.ask_timeout_seconds,
+            )
         if completed.returncode != 0:
             raise RuntimeAdapterError(_render_process_failure(completed))
 
@@ -896,6 +913,8 @@ def _compact_prompt_lines(
 def _compose_prompt(request: RuntimeRequest) -> str:
     if request.answer_schema == "brief_response" and not request.observations:
         return request.prompt
+    if request.mode == "general_chat":
+        return _compose_general_chat_prompt(request)
 
     evidence_lines = [f"- {item}" for item in request.evidence_refs] or ["- None yet"]
     observation_lines = [f"- {observation}" for observation in request.observations] or ["- None yet"]
@@ -1042,6 +1061,25 @@ def _compose_prompt(request: RuntimeRequest) -> str:
         "Do not mention session ids, audit paths, runtime names, selected_mode, or other operational metadata in the answer body.",
     ]
     return "\n".join(sections)
+
+
+def _compose_general_chat_prompt(request: RuntimeRequest) -> str:
+    return "\n".join(
+        (
+            "You are answering a single-turn direct question through `labai ask`.",
+            "Treat the user prompt as self-contained text.",
+            "Do not inspect repositories, files, workspaces, PDFs, or papers.",
+            "Do not claim to have read, scanned, edited, verified, or compared any local resource.",
+            "If the prompt requests actual file, repository, PDF, or workspace operations, do not execute them. Briefly point the user to the appropriate `labai workflow ...` command when it is obvious.",
+            "Preserve the user's language in the answer.",
+            "If the target language is zh-CN, answer in Simplified Chinese. Keep only code identifiers, file paths, and CLI literals in English.",
+            "Obey exact output instructions such as only output the answer, do not explain, or only output the translation.",
+            "Do not include operational metadata, evidence sections, or workflow traces in the answer body.",
+            "",
+            "User prompt:",
+            request.prompt,
+        )
+    )
 
 
 def _mode_outline(mode: str) -> tuple[str, ...]:

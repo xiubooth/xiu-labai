@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import json
 from typing import Any, TYPE_CHECKING
 from urllib.error import HTTPError, URLError
@@ -75,6 +76,9 @@ class OllamaProvider:
             raise ProviderError(validation_error)
 
         selected_model = request.preferred_model or config.ollama.model
+        progress_reporter = request.progress_reporter
+        if progress_reporter is not None:
+            progress_reporter.emit(f"model selected: provider=ollama model={selected_model}")
         prompt = _compose_prompt(request)
         payload = {
             "model": selected_model,
@@ -92,9 +96,22 @@ class OllamaProvider:
             method="POST",
         )
 
+        if progress_reporter is not None:
+            progress_reporter.emit(
+                f"model call started: provider=ollama model={selected_model}"
+            )
         try:
-            with urlopen(http_request, timeout=config.ollama.timeout_seconds) as response:
-                raw_response = response.read().decode("utf-8")
+            with (
+                progress_reporter.heartbeat(
+                    waiting_message="still waiting for model response... {elapsed:.0f}s",
+                    failure_message="model call failed: provider=ollama",
+                    completion_message="model call completed: provider=ollama",
+                )
+                if progress_reporter is not None
+                else nullcontext()
+            ):
+                with urlopen(http_request, timeout=config.ollama.timeout_seconds) as response:
+                    raw_response = response.read().decode("utf-8")
         except (HTTPError, URLError, OSError, TimeoutError) as exc:
             raise ProviderError(
                 f"Local Ollama request failed at {config.ollama.base_url}: {exc}"
@@ -165,6 +182,8 @@ def _validate_ollama_config(config: LabaiConfig) -> str | None:
 def _compose_prompt(request: ProviderRequest) -> str:
     if request.answer_schema == "brief_response" and not request.observations:
         return request.prompt
+    if request.mode == "general_chat":
+        return _compose_general_chat_prompt(request)
 
     evidence_lines = [f"- {item}" for item in request.evidence_refs] or ["- None yet"]
     observation_lines = [f"- {observation}" for observation in request.observations] or ["- None yet"]
@@ -227,6 +246,25 @@ def _compose_prompt(request: ProviderRequest) -> str:
         "Do not mention session ids, audit paths, runtime names, selected_mode, or other operational metadata in the answer body.",
     ]
     return "\n".join(sections)
+
+
+def _compose_general_chat_prompt(request: ProviderRequest) -> str:
+    return "\n".join(
+        (
+            "You are answering a single-turn direct question through `labai ask`.",
+            "Treat the user prompt as self-contained text.",
+            "Do not inspect repositories, files, workspaces, PDFs, or papers.",
+            "Do not claim to have read, scanned, edited, verified, or compared any local resource.",
+            "If the prompt requests actual file, repository, PDF, or workspace operations, do not execute them. Briefly point the user to the appropriate `labai workflow ...` command when it is obvious.",
+            "Preserve the user's language in the answer.",
+            "If the target language is zh-CN, answer in Simplified Chinese. Keep only code identifiers, file paths, and CLI literals in English.",
+            "Obey exact output instructions such as only output the answer, do not explain, or only output the translation.",
+            "Do not include operational metadata, evidence sections, or workflow traces in the answer body.",
+            "",
+            "User prompt:",
+            request.prompt,
+        )
+    )
 
 
 def _mode_outline(mode: str) -> tuple[str, ...]:

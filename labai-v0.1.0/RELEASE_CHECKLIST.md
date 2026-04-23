@@ -8,6 +8,8 @@
   - `labai tools`
   - `labai ask`
   - `labai workflow ...`
+- [ ] Confirm `labai ask` stays lightweight and does not auto-run heavy workflows.
+- [ ] Confirm interactive progress goes to `stderr` and does not pollute exact-answer stdout output.
 - [ ] Confirm the release keeps the default local-first target:
   - `active_profile = local`
   - `active_generation_provider = local`
@@ -129,6 +131,11 @@
   - `runtime_fallback: none` for local ask
   - the managed Claw path is used
   - config does not reference developer `claw-code`
+- [ ] Record the local performance smoke classification from `verify-install.ps1`:
+  - `local_ready`
+  - `local_works_but_slow`
+  - `local_not_recommended`
+  - `local_failed`
 
 ## Ship Readiness
 

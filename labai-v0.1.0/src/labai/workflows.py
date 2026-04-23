@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 from typing import Callable, Literal, Sequence
 
 from labai.config import LabaiConfig
@@ -470,12 +471,14 @@ def _resolve_edit_task(
         "This workflow reuses the Phase 9 plan-first, grouped-apply edit loop.",
         "Phase 13 extends it with structured file output, targeted checks, and a bounded repair loop.",
     )
+    workspace_root = _infer_edit_task_workspace_root(config, instruction)
     resolution = _build_resolution(
         config,
         spec=get_workflow_spec("edit-task"),
         prompt=prompt,
         resolved_inputs=(instruction,),
         accepted_paths=(),
+        workspace_root=workspace_root,
         workflow_notes=preview_notes,
     )
     if not resolution.planned_modifications and not resolution.planned_creations:
@@ -486,6 +489,23 @@ def _resolve_edit_task(
         resolution,
         prompt=_build_edit_task_prompt(instruction, resolution),
     )
+
+
+def _infer_edit_task_workspace_root(
+    config: LabaiConfig,
+    instruction: str,
+) -> Path | None:
+    access_manager = WorkspaceAccessManager(config)
+    raw_prompt_paths = re.findall(
+        r"[A-Za-z]:\\(?:[^\r\n\"<>|?*\\]+\\)*[^\r\n\"<>|?*\\]+\.(?:py|ipynb|md|toml|json|ya?ml|ps1|txt)",
+        instruction,
+        flags=re.IGNORECASE,
+    )
+    for raw_path in raw_prompt_paths:
+        resolved_root = access_manager.resolve_explicit_read_root(raw_path)
+        if resolved_root is not None:
+            return resolved_root
+    return None
 
 
 def _resolve_compile_prompt(

@@ -75,7 +75,7 @@ Existing core modules retained in the release:
 
 ## Included Source-Controlled Checks
 
-If present in the source repo, the release includes the clean `.continue/checks/` specs used by the current workflow framework:
+`.continue/` was inspected before packaging. The repo currently contains only clean workflow specs under `.continue/checks/`, so the release keeps those markdown check specs and excludes any other `.continue` content:
 
 - `.continue/checks/labai-phase18-ask-output.md`
 - `.continue/checks/labai-phase18-notebook-deliverable.md`
@@ -107,6 +107,17 @@ Optional dependency:
 
 - `grep-ast`
   - optional because `src/labai/external/grep_ast_adapter.py` has a Python-AST fallback when `grep-ast` is unavailable
+
+## CLI Progress And Local Smoke
+
+- Interactive CLI progress is emitted to `stderr`, not mixed into the final answer body on `stdout`.
+- `labai ask` remains the lightweight direct-answer surface.
+- `labai workflow ...` remains the explicit heavy execution surface.
+- `scripts/windows/verify-install.ps1` now records a local performance classification:
+  - `local_ready`
+  - `local_works_but_slow`
+  - `local_not_recommended`
+  - `local_failed`
 
 ## Explicitly Excluded From The RA-Facing Zip
 

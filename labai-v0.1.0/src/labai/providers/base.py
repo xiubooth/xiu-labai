@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
     from labai.config import LabaiConfig
+    from labai.runtime.progress import ProgressReporter
 
 
 class ProviderError(RuntimeError):
@@ -35,6 +36,7 @@ class ProviderRequest:
     response_language: str = "en"
     evidence_refs: tuple[str, ...] = ()
     grounded_draft: str | None = None
+    progress_reporter: "ProgressReporter | None" = None
 
 
 @dataclass(frozen=True)

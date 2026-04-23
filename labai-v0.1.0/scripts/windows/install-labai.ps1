@@ -126,6 +126,16 @@ function Restore-ProcessTemp {
     }
 }
 
+function Write-Step {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    Write-Host ""
+    Write-Host "[labai-install] $Message"
+}
+
 $script:PythonLauncher = Resolve-PythonLauncher
 
 Write-Host "LabAI installer"
@@ -148,7 +158,7 @@ $env:TMP = $bootstrapTempDir
 
 try {
     if (-not (Test-Path -LiteralPath $venvPython)) {
-        Write-Host "Creating virtual environment..."
+        Write-Step "Creating virtual environment"
         Push-Location $repoRoot
         try {
             Invoke-RootPython -Arguments @("-m", "venv", $venvDir)
@@ -164,7 +174,7 @@ try {
 
     Push-Location $repoRoot
     try {
-        Write-Host "Upgrading pip..."
+        Write-Step "Upgrading pip"
         Invoke-VenvPython -Arguments @("-m", "pip", "install", "--upgrade", "pip")
 
         $installArgs = @("-m", "pip", "install", "-e")
@@ -174,7 +184,7 @@ try {
         else {
             $installArgs += "."
         }
-        Write-Host "Installing LabAI..."
+        Write-Step "Installing LabAI package"
         Invoke-VenvPython -Arguments $installArgs
     }
     finally {
@@ -190,6 +200,7 @@ if (-not (Test-Path -LiteralPath $venvLabai)) {
 }
 
 New-Item -ItemType Directory -Force -Path $labaiDir | Out-Null
+Write-Step "Applying profile template and launcher scripts"
 $configStatus = "preserved"
 $backupPath = $null
 if (-not (Test-Path -LiteralPath $configPath)) {

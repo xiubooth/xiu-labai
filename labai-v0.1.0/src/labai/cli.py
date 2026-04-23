@@ -55,8 +55,20 @@ from labai.research import (
     result_to_session_record,
     run_research_loop,
 )
-from labai.research.modes import mode_router_summary, model_selector_summary, select_mode
-from labai.runtime import AuditLogger, AuditRecord, SessionManager, SessionRecord
+from labai.research.modes import (
+    mode_router_summary,
+    model_selector_summary,
+    route_ask_prompt,
+    select_mode,
+)
+from labai.runtime import (
+    AuditLogger,
+    AuditRecord,
+    ProgressReporter,
+    SessionManager,
+    SessionRecord,
+    create_progress_reporter,
+)
 from labai.runtime import AnswerArtifact, MarkdownArtifactWriter
 from labai.structured_edits import build_structured_edit_ops, landed_edit_evidence
 from labai.task_manifest import TaskManifest, build_task_manifest
@@ -431,16 +443,24 @@ def ask(prompt: str = typer.Argument(..., help="Prompt text for the active provi
 
     config = _load_config_or_exit()
     session_id = _new_session_id()
-    mode_selection = select_mode(config, prompt)
-    if mode_selection.mode == "workspace_edit":
-        result = _execute_workspace_edit_flow(
-            config,
-            prompt,
-            session_id=session_id,
-            original_instruction=prompt,
-        )
-    else:
-        result = run_research_loop(config, prompt, session_id)
+    ask_decision = route_ask_prompt(config, prompt)
+    progress = create_progress_reporter()
+    progress.emit("starting ask")
+    progress.emit(
+        "lightweight ask selected: "
+        f"mode={ask_decision.mode_selection.mode} read_strategy={ask_decision.mode_selection.read_strategy}"
+    )
+    if ask_decision.answer_override:
+        progress.emit("lightweight ask stayed in direct-answer mode; no workflow execution will run")
+    result = run_research_loop(
+        config,
+        prompt,
+        session_id,
+        mode_selection_override=ask_decision.mode_selection,
+        allow_prompt_workspace_override=False,
+        final_answer_override=ask_decision.answer_override or None,
+        progress_reporter=progress,
+    )
     artifact, session_path, audit_path = _persist_result(
         config,
         result,
@@ -452,9 +472,13 @@ def ask(prompt: str = typer.Argument(..., help="Prompt text for the active provi
 
     if result.status == "ok" and console_mode == "answer_only":
         _echo(result.final_answer or "(no answer)")
+        progress.emit("ask completed")
     else:
         if result.status != "ok":
+            progress.emit(f"ask failed: {result.error or 'ask failed'}")
             _print_error(f"error: {result.error or 'ask failed'}")
+        else:
+            progress.emit("ask completed")
     if result.status != "ok":
         raise typer.Exit(code=1)
 
@@ -682,13 +706,22 @@ def _run_workflow_command(
     preview: bool,
 ) -> None:
     config = _load_config_or_exit()
+    progress = create_progress_reporter()
+    progress.emit(f"starting workflow: {command_name}")
+    progress.emit(f"resolving workflow command: {command_name}")
     try:
         resolution = resolve_workflow_command(config, command_name, arguments)
     except WorkflowCommandError as exc:
+        progress.emit(f"workflow resolution failed: {exc}")
         _print_error(f"workflow_error: {exc}")
         raise typer.Exit(code=1) from exc
 
+    progress.emit(
+        "workflow resolved: "
+        f"mode={resolution.selected_mode} read_strategy={resolution.read_strategy}"
+    )
     if preview:
+        progress.emit("preview mode selected: no workflow execution will run")
         session_path, audit_path = _persist_workflow_preview(
             resolution.config_for_execution,
             resolution,
@@ -704,12 +737,17 @@ def _run_workflow_command(
 
     session_id = _new_session_id()
     if resolution.spec.name == "edit-task":
-        result = _execute_edit_task_workflow(resolution, session_id=session_id)
+        result = _execute_edit_task_workflow(
+            resolution,
+            session_id=session_id,
+            progress_reporter=progress,
+        )
     else:
         result = run_research_loop(
             resolution.config_for_execution,
             resolution.prompt,
             session_id,
+            progress_reporter=progress,
         )
     workflow_trace = build_workflow_trace(resolution, preview=False)
     artifact, session_path, audit_path = _persist_result(
@@ -728,14 +766,17 @@ def _run_workflow_command(
         )
     )
     if result.status != "ok":
+        progress.emit(f"workflow failed: {result.error or 'workflow execution failed'}")
         _print_error(f"workflow_error: {result.error or 'workflow execution failed'}")
         raise typer.Exit(code=1)
+    progress.emit(f"workflow completed: {resolution.spec.name}")
 
 
 def _execute_edit_task_workflow(
     resolution,
     *,
     session_id: str,
+    progress_reporter: ProgressReporter | None = None,
 ):
     execution_prompt = resolution.resolved_inputs[0] if resolution.resolved_inputs else resolution.prompt
     return _execute_workspace_edit_flow(
@@ -748,6 +789,7 @@ def _execute_edit_task_workflow(
         expected_checks=resolution.expected_checks,
         original_instruction=execution_prompt,
         preflight=True,
+        progress_reporter=progress_reporter,
     )
 
 
@@ -762,6 +804,7 @@ def _execute_workspace_edit_flow(
     expected_checks: tuple[str, ...] = (),
     original_instruction: str | None = None,
     preflight: bool = False,
+    progress_reporter: ProgressReporter | None = None,
 ):
     max_repair_rounds = 8
     task_run_id = _new_task_run_id()
@@ -782,6 +825,8 @@ def _execute_workspace_edit_flow(
     auto_created_summaries: tuple[str, ...] = ()
     route2_context: Route2Context | None = None
     initial_workspace_root = Path(workspace_root or config.workspace.active_workspace_root)
+    if progress_reporter is not None:
+        progress_reporter.emit(f"resolving edit workspace: {initial_workspace_root}")
     if workspace_root is None:
         prompt_access_manager = WorkspaceAccessManager(config)
         prompt_mode_selection = select_mode(config, prompt)
@@ -799,6 +844,8 @@ def _execute_workspace_edit_flow(
                     active_workspace_root=initial_workspace_root,
                 ),
             )
+            if progress_reporter is not None:
+                progress_reporter.emit(f"resolved prompt workspace root: {initial_workspace_root}")
     initial_workspace_coverage = collect_workspace_coverage(initial_workspace_root)
     if not locked_modifications and not locked_creations and initial_workspace_root.is_dir():
         access_manager = WorkspaceAccessManager(config)
@@ -842,12 +889,16 @@ def _execute_workspace_edit_flow(
     )
     task_contract = _task_contract_with_route2_context(task_contract, route2_context)
     _record_route2_context(evidence_ledger, route2_context)
+    if progress_reporter is not None:
+        progress_reporter.emit("building task manifest, owner detection, and structured edit plan")
     original_text_snapshots = _snapshot_workspace_texts(
         initial_workspace_root,
         locked_modifications,
     )
 
     if preflight and workspace_root is not None:
+        if progress_reporter is not None:
+            progress_reporter.emit("running preflight checks")
         provisional_checks = build_workspace_check_plan(
             original_instruction or prompt,
             workspace_root,
@@ -883,7 +934,29 @@ def _execute_workspace_edit_flow(
         original_instruction or prompt,
         task_contract=task_contract,
     )
-    result = run_research_loop(config, execution_prompt, session_id)
+    if progress_reporter is not None:
+        progress_reporter.emit("edit round 1: starting model pass")
+    result = run_research_loop(
+        config,
+        execution_prompt,
+        session_id,
+        progress_reporter=progress_reporter,
+    )
+    if progress_reporter is not None:
+        touched_now = _dedupe_strings(
+            (
+                *tuple(result.workspace_trace.modified_files),
+                *tuple(result.workspace_trace.created_files),
+            )
+        )
+        if touched_now:
+            progress_reporter.emit(
+                "applying edits: "
+                + ", ".join(touched_now[:6])
+                + (f", plus {len(touched_now) - 6} more" if len(touched_now) > 6 else "")
+            )
+        else:
+            progress_reporter.emit("model pass completed without landed edits yet")
     attempt_results = [result]
     dataframe_fallback_applied = False
     dataframe_fallback_modified: tuple[str, ...] = ()
@@ -977,13 +1050,19 @@ def _execute_workspace_edit_flow(
         planning_errors.extend(
             item.summary for item in planning_issue_results if item.summary not in planning_errors
         )
+        if progress_reporter is not None and checks:
+            progress_reporter.emit("running validation")
         post_results = (
             *planning_issue_results,
             *(run_workspace_checks(active_workspace_root, checks) if checks else ()),
         )
     else:
         planned_check_details = _build_planned_check_details(checks)
-        post_results = run_workspace_checks(active_workspace_root, checks) if checks else ()
+        post_results = ()
+        if checks:
+            if progress_reporter is not None:
+                progress_reporter.emit("running validation")
+            post_results = run_workspace_checks(active_workspace_root, checks)
     rendered_expected_checks = expected_checks or tuple(check.summary for check in checks)
     all_check_runs.extend(post_results)
     all_check_details.extend(
@@ -1049,6 +1128,8 @@ def _execute_workspace_edit_flow(
     ) and attempt < max_repair_rounds:
         attempt += 1
         repair_rounds += 1
+        if progress_reporter is not None:
+            progress_reporter.emit(f"repair round {attempt}: building retry prompt")
         repair_notes.append(
             _build_edit_task_retry_note(
                 attempt=attempt,
@@ -1215,7 +1296,23 @@ def _execute_workspace_edit_flow(
             retry_config,
             retry_prompt,
             _new_session_id(),
+            progress_reporter=progress_reporter,
         )
+        if progress_reporter is not None:
+            touched_now = _dedupe_strings(
+                (
+                    *tuple(result.workspace_trace.modified_files),
+                    *tuple(result.workspace_trace.created_files),
+                )
+            )
+            if touched_now:
+                progress_reporter.emit(
+                    f"repair round {attempt}: landed edits on "
+                    + ", ".join(touched_now[:6])
+                    + (f", plus {len(touched_now) - 6} more" if len(touched_now) > 6 else "")
+                )
+            else:
+                progress_reporter.emit(f"repair round {attempt}: no landed edits yet")
         attempt_results.append(result)
         locked_modifications, locked_creations = _merge_workspace_edit_targets(
             locked_modifications,
@@ -1284,6 +1381,8 @@ def _execute_workspace_edit_flow(
             item.summary for item in planning_issue_results if item.summary not in planning_errors
         )
         rendered_expected_checks = rendered_expected_checks or tuple(check.summary for check in checks)
+        if progress_reporter is not None and checks:
+            progress_reporter.emit(f"repair round {attempt}: running validation")
         post_results = (
             *planning_issue_results,
             *(run_workspace_checks(active_workspace_root, checks) if checks else ()),
@@ -1706,6 +1805,8 @@ def _execute_workspace_edit_flow(
         outcome_summary=_join_outcome_summary(result.outcome_summary, outcome_suffix),
     )
     if final_status == "failed":
+        if progress_reporter is not None:
+            progress_reporter.emit("workflow edit failed after validation")
         failure_answer = _build_edit_task_failure_answer(
             result=result,
             checks=checks,
@@ -1725,6 +1826,8 @@ def _execute_workspace_edit_flow(
             status="error",
             error=failure_reason,
         )
+    if progress_reporter is not None:
+        progress_reporter.emit("workflow edit completed successfully")
     return result
 
 

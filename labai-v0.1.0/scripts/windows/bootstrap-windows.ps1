@@ -26,6 +26,16 @@ if ([string]::IsNullOrWhiteSpace($LauncherDir)) {
 }
 $resolvedLauncherDir = [System.IO.Path]::GetFullPath($LauncherDir)
 
+function Write-Step {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    Write-Host ""
+    Write-Host "[labai-setup] $Message"
+}
+
 function Refresh-ProcessPath {
     $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -207,20 +217,25 @@ Write-Host "Bundled Claw asset: $bundledClawPath"
 Write-Host ""
 
 Refresh-ProcessPath
+Write-Step "Checking Python"
 $pythonLauncher = Ensure-Python
 Write-Host "Python launcher: $pythonLauncher"
 
+Write-Step "Provisioning managed Claw runtime"
 $managedClaw = Ensure-ManagedClaw
 Write-Host "Managed Claw ready: $managedClaw"
 
+Write-Step "Checking Ollama and local model service"
 $ollamaPath = Ensure-Ollama
 Write-Host "Ollama binary: $ollamaPath"
 Write-Host "Ollama API: ready"
 
+Write-Step "Installing LabAI into the local virtual environment"
 Invoke-Checked -Label "install-labai.ps1" -Command {
     & $installScript -Profile local -LauncherDir $resolvedLauncherDir -SkipUserPathUpdate:$SkipUserPathUpdate
 }
 
+Write-Step "Applying the local profile and ensuring required local models"
 Invoke-Checked -Label "setup-local-ollama.ps1" -Command {
     & $localSetupScript -Apply -Yes -GenerationModel "qwen2.5:7b" -EmbeddingModel "qwen3-embedding:0.6b"
 }
@@ -236,9 +251,11 @@ if (-not (Test-Path -LiteralPath $managedClawPath)) {
     throw "Managed Claw binary is missing after bootstrap: $managedClawPath"
 }
 
+Write-Step "Running doctor and lightweight ask smoke"
 Invoke-Captured -Label "labai doctor" -Command { & $venvLabai doctor } | Out-Null
 Invoke-Captured -Label 'labai ask "hello"' -Command { & $venvLabai ask "hello" } | Out-Null
 
+Write-Step "Running shipped install verification"
 Invoke-Checked -Label "verify-install.ps1" -Command {
     & $verifyScript -LauncherDir $resolvedLauncherDir
 }

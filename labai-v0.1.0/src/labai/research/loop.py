@@ -32,7 +32,7 @@ from labai.providers import (
     get_default_provider,
     get_provider,
 )
-from labai.runtime import AuditRecord, SessionRecord
+from labai.runtime import AuditRecord, ProgressReporter, SessionRecord
 from labai.runtime.answer_style import looks_like_structured_output
 from labai.tools import ToolDispatcher, ToolExecutionError, ToolValidationError
 from labai.workspace import WorkspaceAccessManager, WorkspaceWriteResult, _iter_prompt_candidates
@@ -1493,16 +1493,30 @@ def run_research_loop(
     config: LabaiConfig,
     prompt: str,
     session_id: str,
+    *,
+    mode_selection_override: ModeSelection | None = None,
+    allow_prompt_workspace_override: bool = True,
+    final_answer_override: str | None = None,
+    progress_reporter: ProgressReporter | None = None,
 ) -> ResearchResult:
     started_at = _utc_timestamp()
-    mode_selection = select_mode(config, prompt)
-    config, workspace_override_note = _maybe_apply_prompt_workspace_override(
-        config,
-        prompt,
-        mode_selection,
-    )
+    mode_selection = mode_selection_override or select_mode(config, prompt)
+    if progress_reporter is not None:
+        progress_reporter.emit(
+            "selected path: "
+            f"mode={mode_selection.mode} read_strategy={mode_selection.read_strategy}"
+        )
+    workspace_override_note = ""
+    if allow_prompt_workspace_override:
+        config, workspace_override_note = _maybe_apply_prompt_workspace_override(
+            config,
+            prompt,
+            mode_selection,
+        )
     access_manager = WorkspaceAccessManager(config)
-    mode_selection = select_mode(config, prompt)
+    if mode_selection_override is None:
+        mode_selection = select_mode(config, prompt)
+    general_chat_mode = mode_selection.mode == "general_chat"
     paper_trace = PaperTrace()
     workspace_trace = _initial_workspace_trace(config, access_manager)
     onboarding_coverage = OnboardingCoverage()
@@ -1516,37 +1530,58 @@ def run_research_loop(
             f"{len(onboarding_coverage.inspected_paths)} inspected files."
         )
         workspace_coverage_skipped_notes = onboarding_coverage.skipped_notes[:2]
-    edit_plan = build_workspace_edit_plan(prompt, mode_selection, access_manager)
-    output_intent_name, output_intent_reason = classify_output_intent(edit_plan)
-    tool_decisions = _plan_tool_usage(
-        prompt,
-        access_manager.active_workspace_root,
-        mode_selection,
-        edit_plan,
-        workspace_coverage=(
-            onboarding_coverage if mode_selection.mode == "workspace_edit" else None
-        ),
-    )
-    tool_calls, observations, evidence_refs = _execute_tool_plan(access_manager, tool_decisions)
-    if workspace_override_note:
-        observations.insert(0, workspace_override_note)
-    if workspace_coverage_note:
-        observations.append(workspace_coverage_note)
-        observations.extend(workspace_coverage_skipped_notes)
-    if _is_paper_mode(mode_selection.mode):
-        paper_context = _prepare_paper_mode_context(config, prompt, mode_selection)
-        paper_trace = _paper_trace_from_context(paper_context, mode_selection)
-        paper_trace = _prepare_detailed_paper_trace(
-            config,
-            mode_selection,
-            paper_trace,
+    if general_chat_mode:
+        if progress_reporter is not None:
+            progress_reporter.emit("general_chat selected: no tools, no evidence collection, no workflow execution")
+        edit_plan = WorkspaceEditPlan(
+            reason="general_chat is answer-only and does not execute workspace mutations."
         )
-        observations.extend(paper_context.observations)
-        evidence_refs = _dedupe_strings((*evidence_refs, *paper_context.evidence_refs))
-        if paper_context.target_paths:
-            evidence_refs = _dedupe_strings((*paper_context.target_paths, *evidence_refs))
-    elif mode_selection.matched_paths:
-        evidence_refs = _dedupe_strings((*mode_selection.matched_paths, *evidence_refs))
+        output_intent_name = "answer_only"
+        output_intent_reason = "general_chat stays answer-only and does not create deliverables."
+        tool_decisions: list[ToolDecision] = []
+        tool_calls: list[ToolCall] = []
+        observations: list[str] = []
+        evidence_refs: tuple[str, ...] = ()
+    else:
+        edit_plan = build_workspace_edit_plan(prompt, mode_selection, access_manager)
+        output_intent_name, output_intent_reason = classify_output_intent(edit_plan)
+        tool_decisions = _plan_tool_usage(
+            prompt,
+            access_manager.active_workspace_root,
+            mode_selection,
+            edit_plan,
+            workspace_coverage=(
+                onboarding_coverage if mode_selection.mode == "workspace_edit" else None
+            ),
+        )
+        if progress_reporter is not None and tool_decisions:
+            progress_reporter.emit("reading workspace files")
+        tool_calls, observations, evidence_refs = _execute_tool_plan(
+            access_manager,
+            tool_decisions,
+            progress_reporter=progress_reporter,
+        )
+        if workspace_override_note:
+            observations.insert(0, workspace_override_note)
+        if workspace_coverage_note:
+            observations.append(workspace_coverage_note)
+            observations.extend(workspace_coverage_skipped_notes)
+        if _is_paper_mode(mode_selection.mode):
+            if progress_reporter is not None:
+                progress_reporter.emit("reading and preparing paper context")
+            paper_context = _prepare_paper_mode_context(config, prompt, mode_selection)
+            paper_trace = _paper_trace_from_context(paper_context, mode_selection)
+            paper_trace = _prepare_detailed_paper_trace(
+                config,
+                mode_selection,
+                paper_trace,
+            )
+            observations.extend(paper_context.observations)
+            evidence_refs = _dedupe_strings((*evidence_refs, *paper_context.evidence_refs))
+            if paper_context.target_paths:
+                evidence_refs = _dedupe_strings((*paper_context.target_paths, *evidence_refs))
+        elif mode_selection.matched_paths:
+            evidence_refs = _dedupe_strings((*mode_selection.matched_paths, *evidence_refs))
     grounded_draft = _build_grounded_draft(
         config,
         prompt,
@@ -1581,8 +1616,11 @@ def run_research_loop(
             evidence_refs,
             mode_selection,
             grounded_draft,
+            progress_reporter=progress_reporter,
         )
         final_answer = route.text
+        if final_answer_override:
+            final_answer = final_answer_override
         if (
             mode_selection.mode == "project_onboarding"
             and grounded_draft
@@ -11581,6 +11619,7 @@ def _run_answer_route(
     evidence_refs: tuple[str, ...],
     mode_selection: ModeSelection,
     grounded_draft: str | None,
+    progress_reporter: ProgressReporter | None = None,
 ) -> AnswerRoute:
     if config.runtime.runtime == "claw":
         return _run_claw_route(
@@ -11591,6 +11630,7 @@ def _run_answer_route(
             evidence_refs,
             mode_selection,
             grounded_draft,
+            progress_reporter=progress_reporter,
         )
     return _run_native_route(
         config,
@@ -11602,6 +11642,7 @@ def _run_answer_route(
         grounded_draft,
         requested_runtime="native",
         runtime_fallback=_no_runtime_fallback("native", config.runtime.fallback_runtime),
+        progress_reporter=progress_reporter,
     )
 
 
@@ -11613,9 +11654,15 @@ def _run_claw_route(
     evidence_refs: tuple[str, ...],
     mode_selection: ModeSelection,
     grounded_draft: str | None,
+    progress_reporter: ProgressReporter | None = None,
 ) -> AnswerRoute:
     adapter = ClawRuntimeAdapter()
     health = adapter.healthcheck(config)
+    if progress_reporter is not None:
+        progress_reporter.emit(
+            "runtime selected: "
+            f"runtime=claw provider=claw model={mode_selection.selected_model or health.model or '(default)'}"
+        )
 
     if health.available:
         try:
@@ -11628,11 +11675,14 @@ def _run_claw_route(
                     evidence_refs=evidence_refs,
                     mode_selection=mode_selection,
                     grounded_draft=grounded_draft,
+                    progress_reporter=progress_reporter,
                 ),
             )
         except RuntimeAdapterError as exc:
             if _is_retryable_claw_empty_stream(exc):
                 observations.append(_claw_empty_stream_retry_note(mode_selection.mode))
+                if progress_reporter is not None:
+                    progress_reporter.emit("retrying claw model call after empty assistant stream")
                 try:
                     response = adapter.ask(
                         config,
@@ -11643,6 +11693,7 @@ def _run_claw_route(
                             evidence_refs=evidence_refs,
                             mode_selection=mode_selection,
                             grounded_draft=grounded_draft,
+                            progress_reporter=progress_reporter,
                         ),
                     )
                 except RuntimeAdapterError:
@@ -11731,6 +11782,7 @@ def _build_runtime_request(
     evidence_refs: tuple[str, ...],
     mode_selection: ModeSelection,
     grounded_draft: str | None,
+    progress_reporter: ProgressReporter | None = None,
 ) -> RuntimeRequest:
     return RuntimeRequest(
         prompt=prompt,
@@ -11747,6 +11799,7 @@ def _build_runtime_request(
         response_language=mode_selection.response_language,
         evidence_refs=evidence_refs,
         grounded_draft=grounded_draft,
+        progress_reporter=progress_reporter,
     )
 
 
@@ -11784,8 +11837,14 @@ def _run_native_route(
     *,
     requested_runtime: str,
     runtime_fallback: RuntimeFallbackInfo,
+    progress_reporter: ProgressReporter | None = None,
 ) -> AnswerRoute:
     provider, provider_health, provider_fallback = _resolve_provider(config)
+    if progress_reporter is not None:
+        progress_reporter.emit(
+            "provider selected: "
+            f"provider={provider_fallback.active_provider} model={mode_selection.selected_model or provider_health.model or '(default)'}"
+        )
     response = provider.ask(
         config,
         ProviderRequest(
@@ -11803,6 +11862,7 @@ def _run_native_route(
             response_language=mode_selection.response_language,
             evidence_refs=evidence_refs,
             grounded_draft=grounded_draft,
+            progress_reporter=progress_reporter,
         ),
     )
     return AnswerRoute(
@@ -11915,7 +11975,7 @@ def _build_grounded_draft(
     edit_plan: WorkspaceEditPlan | None = None,
     workspace_coverage: OnboardingCoverage | None = None,
 ) -> str | None:
-    if mode_selection.answer_schema == "brief_response":
+    if mode_selection.answer_schema == "brief_response" or mode_selection.mode == "general_chat":
         return None
 
     builders = {
@@ -15980,7 +16040,7 @@ def _plan_tool_usage(
     edit_plan: WorkspaceEditPlan | None = None,
     workspace_coverage: OnboardingCoverage | None = None,
 ) -> list[ToolDecision]:
-    if mode_selection.answer_schema == "brief_response":
+    if mode_selection.answer_schema == "brief_response" or mode_selection.mode == "general_chat":
         return []
     if _is_paper_mode(mode_selection.mode):
         return []
@@ -16410,6 +16470,8 @@ def _dedupe_decisions(decisions: list[ToolDecision]) -> list[ToolDecision]:
 def _execute_tool_plan(
     access_root: Path | WorkspaceAccessManager,
     decisions: list[ToolDecision],
+    *,
+    progress_reporter: ProgressReporter | None = None,
 ) -> tuple[list[ToolCall], list[str], tuple[str, ...]]:
     if not decisions:
         return [], [], ()
@@ -16421,6 +16483,8 @@ def _execute_tool_plan(
 
     for decision in decisions:
         try:
+            if progress_reporter is not None:
+                progress_reporter.emit(f"reading workspace files: {decision.tool_name}")
             result = dispatcher.execute(decision.tool_name, **decision.arguments)
             summary, extracted_refs = _summarize_tool_result(result)
             tool_calls.append(

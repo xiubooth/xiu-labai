@@ -59,7 +59,7 @@ labai doctor
 
 ### `labai ask`
 
-`labai ask` runs a single prompt against the active local or API profile.
+`labai ask` is the lightweight direct-answer surface. It does not automatically scan the repo, read PDFs, edit files, or run workflows.
 
 Examples:
 
@@ -68,9 +68,11 @@ labai ask "hello"
 labai ask "Summarize this repository"
 ```
 
+If you actually want file, repo, PDF, or edit execution, use an explicit workflow command instead of `ask`.
+
 ### `labai workflow <command>`
 
-`labai workflow` exposes higher-level helper commands on top of the same underlying runtime. The current release keeps the command surface stable and adds stronger workspace verification and source-evidence handling behind it.
+`labai workflow` is the heavy execution surface for explicit file, repo, PDF, edit, and verification work. The current release keeps the command surface stable and adds stronger workspace verification and source-evidence handling behind it.
 
 Example:
 
@@ -102,6 +104,26 @@ The bootstrap:
 6. pulls missing local models
 7. runs verification
 
+## Terminal Progress
+
+Interactive runs now emit short progress messages to `stderr` while work is happening. This is not token streaming. It is step-by-step status such as:
+
+- runtime/provider/model selection
+- model call started
+- waiting for model response
+- reading workspace files
+- running validation
+
+The final answer body still stays on `stdout`, so exact-output asks remain clean.
+
+Progress control:
+
+```powershell
+$env:LABAI_PROGRESS="auto"   # default
+$env:LABAI_PROGRESS="on"
+$env:LABAI_PROGRESS="off"
+```
+
 ### Verify the install
 
 ```powershell
@@ -119,9 +141,20 @@ These are intentionally generic and safe to reuse.
 labai doctor
 labai tools
 labai ask "hello"
-labai ask "Summarize this repository"
+labai ask "What is asset pricing?"
 labai workflow verify-workspace --preview
 ```
+
+## Local Performance Note
+
+The install verification now runs a small local model smoke and reports one of:
+
+- `local_ready`
+- `local_works_but_slow`
+- `local_not_recommended`
+- `local_failed`
+
+If local Qwen works but is too slow on a weaker machine, the install can still succeed. In that case, API mode may be a better day-to-day option later.
 
 ## Papers And Local Data
 

@@ -46,6 +46,8 @@ What the bootstrap does:
    - `labai ask "hello"`
    - `scripts\windows\verify-install.ps1`
 
+During bootstrap and verification, the scripts print step-by-step progress so you can see whether LabAI is checking Python, Ollama, models, Claw, validation, or waiting on the local model path.
+
 Default end state:
 
 - `active_profile = local`
@@ -79,6 +81,15 @@ labai doctor
 labai tools
 labai ask "hello"
 ```
+
+`verify-install.ps1` now also runs a small local performance smoke and reports:
+
+- `local_ready`
+- `local_works_but_slow`
+- `local_not_recommended`
+- `local_failed`
+
+Slow local performance does not automatically fail the install if the local path still works, but the result is reported explicitly so weak machines do not look healthier than they are.
 
 ## If `labai` Is Not Found Immediately
 

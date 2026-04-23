@@ -36,6 +36,16 @@ else {
     $null
 }
 
+function Write-Step {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    Write-Host ""
+    Write-Host "[labai-local] $Message"
+}
+
 function Set-SectionValue {
     param(
         [Parameter(Mandatory = $true)]
@@ -124,8 +134,10 @@ if ($Plan -or -not $Apply) {
     return
 }
 
+Write-Step "Switching to the local profile"
 & $switchScript -Profile local
 
+Write-Step "Updating local model configuration"
 $content = Get-Content -LiteralPath $configPath -Raw -Encoding utf8
 $requiredLiteral = "[" + (($requiredModels | ForEach-Object { "`"$_`"" }) -join ", ") + "]"
 $content = Set-SectionValue -Content $content -Section "models" -Key "general_model" -ValueLiteral "`"$GenerationModel`""
@@ -146,6 +158,7 @@ if ($missingModels.Count -gt 0) {
         Write-Host "  $($missingModels -join ', ')"
     }
     else {
+        Write-Step "Pulling missing local models"
         foreach ($model in $missingModels) {
             Write-Host "Pulling model: $model"
             & $ollamaPath pull $model
@@ -156,6 +169,5 @@ if ($missingModels.Count -gt 0) {
     }
 }
 
-Write-Host ""
-Write-Host "Running doctor with the local profile..."
+Write-Step "Running doctor with the local profile"
 Invoke-LabaiDoctor

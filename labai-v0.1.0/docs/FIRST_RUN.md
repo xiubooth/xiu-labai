@@ -11,6 +11,8 @@ labai ask "hello"
 labai workflow verify-workspace --preview
 ```
 
+Interactive terminal runs may now print short progress messages to `stderr` while work is happening. The final answer body still stays on `stdout`.
+
 ## Recommended First Run
 
 Use the one-click bootstrap:
@@ -67,3 +69,8 @@ The release does not ship real sample papers. If you want to use PDF features, e
 
 - create a neutral folder such as `papers/` in your project and place your PDFs there
 - or point `labai` at an allowed absolute path
+
+Use the lightweight/heavy split intentionally:
+
+- `labai ask ...` for direct prompt answers only
+- `labai workflow ...` for actual file, repo, PDF, edit, and verification work

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import json
 import os
 from typing import Any, TYPE_CHECKING
@@ -92,6 +93,9 @@ class DeepSeekProvider:
             prompt=request.prompt,
             preferred_model=request.preferred_model,
         )
+        progress_reporter = request.progress_reporter
+        if progress_reporter is not None:
+            progress_reporter.emit(f"model selected: provider=deepseek model={selected_model}")
         payload = {
             "model": selected_model,
             "messages": [
@@ -110,9 +114,22 @@ class DeepSeekProvider:
             method="POST",
         )
 
+        if progress_reporter is not None:
+            progress_reporter.emit(
+                f"model call started: provider=deepseek model={selected_model}"
+            )
         try:
-            with urlopen(http_request, timeout=config.deepseek.timeout_seconds) as response:
-                raw_response = response.read().decode("utf-8")
+            with (
+                progress_reporter.heartbeat(
+                    waiting_message="still waiting for model response... {elapsed:.0f}s",
+                    failure_message="model call failed: provider=deepseek",
+                    completion_message="model call completed: provider=deepseek",
+                )
+                if progress_reporter is not None
+                else nullcontext()
+            ):
+                with urlopen(http_request, timeout=config.deepseek.timeout_seconds) as response:
+                    raw_response = response.read().decode("utf-8")
         except (HTTPError, URLError, OSError, TimeoutError) as exc:
             raise ProviderError(
                 f"DeepSeek request failed at {config.deepseek.base_url}: {exc}"

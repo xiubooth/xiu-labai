@@ -9,6 +9,7 @@ from labai.config import LabaiConfig
 from labai.workspace import WorkspaceAccessManager
 
 ResearchMode = Literal[
+    "general_chat",
     "repo_overview",
     "workspace_verification",
     "project_onboarding",
@@ -28,6 +29,7 @@ PaperOutputProfile = Literal["none", "quick_summary", "detailed_paper_note"]
 
 GENERAL_MODEL_MODES = frozenset(
     {
+        "general_chat",
         "repo_overview",
         "workspace_verification",
         "project_onboarding",
@@ -469,6 +471,12 @@ class ModeSelection:
     explicit_override: bool = False
 
 
+@dataclass(frozen=True)
+class AskRoutingDecision:
+    mode_selection: ModeSelection
+    answer_override: str = ""
+
+
 def select_mode(config: LabaiConfig, prompt: str) -> ModeSelection:
     matched_paths = extract_prompt_paths(prompt, config)
     language, language_reason, language_explicit_override = detect_response_language(prompt)
@@ -636,6 +644,85 @@ def select_mode(config: LabaiConfig, prompt: str) -> ModeSelection:
     )
 
 
+def route_ask_prompt(config: LabaiConfig, prompt: str) -> AskRoutingDecision:
+    language, language_reason, language_explicit_override = detect_response_language(prompt)
+    normalized = prompt.strip().lower()
+    direct_answer_override = _build_ask_direct_answer_override(prompt)
+    answer_override = direct_answer_override or _build_ask_answer_override(prompt)
+    reason = (
+        "labai ask is the lightweight direct-model answer surface. "
+        "It answers from the prompt only and does not execute repo, workspace, PDF, or edit workflows automatically."
+    )
+    if answer_override and not direct_answer_override:
+        reason = (
+            "labai ask is the lightweight direct-model answer surface. "
+            "This prompt requests real file, PDF, repository, or workspace operations, so ask returns explicit workflow guidance instead of executing a workflow."
+        )
+
+    mode_selection = ModeSelection(
+        mode="general_chat",
+        reason=reason,
+        answer_schema="general_chat_response",
+        response_language=language,
+        selected_model=select_mode_model(config, "general_chat", prompt),
+        read_strategy="none",
+        read_strategy_reason="labai ask is a lightweight direct-answer surface and does not inspect files or documents automatically.",
+        response_style=_select_response_style(normalized, "general_chat", "none"),
+        include_explicit_evidence_refs=False,
+        paper_output_profile="none",
+        paper_output_profile_reason="Paper output profiles do not apply to direct lightweight ask routing.",
+        matched_paths=(),
+        response_language_reason=language_reason,
+        response_language_explicit_override=language_explicit_override,
+        explicit_override=False,
+    )
+    return AskRoutingDecision(
+        mode_selection=mode_selection,
+        answer_override=answer_override,
+    )
+
+
+def _build_ask_direct_answer_override(prompt: str) -> str:
+    if not _looks_like_answer_only_prompt(prompt):
+        return ""
+    match = re.search(r"(-?\d+)\s*([+\-*/])\s*(-?\d+)", prompt)
+    if match is None:
+        return ""
+    left = int(match.group(1))
+    operator = match.group(2)
+    right = int(match.group(3))
+    if operator == "+":
+        return str(left + right)
+    if operator == "-":
+        return str(left - right)
+    if operator == "*":
+        return str(left * right)
+    if operator == "/":
+        if right == 0:
+            return ""
+        quotient = left / right
+        if quotient.is_integer():
+            return str(int(quotient))
+        return format(quotient, "g")
+    return ""
+
+
+def _looks_like_answer_only_prompt(prompt: str) -> bool:
+    normalized = prompt.strip().lower()
+    answer_only_markers = (
+        "only output",
+        "only answer",
+        "without saying other things",
+        "without explanation",
+        "without explaining",
+        "just the answer",
+        "只输出",
+        "不要解释",
+        "不要说别的",
+    )
+    return any(marker in normalized for marker in answer_only_markers)
+
+
 def select_mode_model(config: LabaiConfig, mode: ResearchMode, prompt: str = "") -> str:
     normalized = prompt.lower()
     if mode.startswith("paper_") and _contains_any(normalized, _CODE_HEAVY_KEYWORDS):
@@ -684,7 +771,7 @@ def extract_prompt_paths(prompt: str, config: LabaiConfig) -> tuple[str, ...]:
 def mode_router_summary() -> str:
     return (
         "ready | "
-        "modes=repo_overview,workspace_verification,project_onboarding,file_explain,architecture_review,implementation_plan,prompt_compiler,"
+        "modes=general_chat,repo_overview,workspace_verification,project_onboarding,file_explain,architecture_review,implementation_plan,prompt_compiler,"
         "compare_options,workspace_edit,paper_summary,paper_compare,paper_grounded_qa | "
         "read_strategies=full_document,retrieval,hybrid"
     )
@@ -693,6 +780,7 @@ def mode_router_summary() -> str:
 def model_selector_summary(config: LabaiConfig) -> str:
     return (
         "ready | "
+        f"general_chat={config.models.general_model} | "
         f"repo_overview={config.models.general_model} | "
         f"workspace_verification={config.models.general_model} | "
         f"project_onboarding={config.models.general_model} | "
@@ -952,6 +1040,8 @@ def _select_answer_schema(
     response_style: ResponseStyle,
     prompt: str,
 ) -> str:
+    if mode == "general_chat":
+        return "general_chat_response"
     if _is_brief_greeting(prompt.strip().lower()):
         return "brief_response"
     if response_style == "continuous_prose":
@@ -1028,6 +1118,87 @@ def _is_brief_greeting(prompt: str) -> bool:
     if len(compact) > 24:
         return False
     return any(compact.startswith(greeting) for greeting in _GREETING_PATTERNS)
+
+
+def _build_ask_answer_override(prompt: str) -> str:
+    normalized = prompt.strip().lower()
+    raw_path_tokens = _extract_ask_path_tokens(prompt)
+    if (
+        raw_path_tokens
+        and not _extract_ask_pdf_tokens(prompt)
+        and _contains_any(normalized, _PAPER_KEYWORDS)
+    ):
+        return (
+            'Use `labai workflow read-paper "<pdf>"` for a single PDF or '
+            '`labai workflow compare-papers "<pdf_a>" "<pdf_b>"` for explicit multi-PDF analysis.'
+        )
+    workflow_command = _suggest_ask_workflow_command(prompt)
+    if not workflow_command:
+        return ""
+    if workflow_command.startswith("labai workflow edit-task"):
+        return f"Use `{workflow_command}` for actual file edits."
+    if workflow_command.startswith("labai workflow read-paper"):
+        return f"To summarize that PDF directly, use: `{workflow_command}`"
+    if workflow_command.startswith("labai workflow compare-papers"):
+        return f"To compare those PDFs directly, use: `{workflow_command}`"
+    if workflow_command == "labai workflow onboard-project":
+        return "Use `labai workflow onboard-project` for a repo-based onboarding summary."
+    if workflow_command == "labai workflow verify-workspace":
+        return "Use `labai workflow verify-workspace` for actual workspace readiness checks."
+    return f"Use `{workflow_command}` for explicit workflow execution."
+
+
+def _suggest_ask_workflow_command(prompt: str) -> str:
+    normalized = prompt.strip().lower()
+    pdf_tokens = _extract_ask_pdf_tokens(prompt)
+    raw_path_tokens = _extract_ask_path_tokens(prompt)
+
+    if len(pdf_tokens) >= 2 and _contains_any(normalized, _COMPARE_KEYWORDS):
+        quoted_paths = " ".join(_quote_workflow_argument(token) for token in pdf_tokens[:4])
+        return f"labai workflow compare-papers {quoted_paths}"
+
+    if pdf_tokens:
+        return f"labai workflow read-paper {_quote_workflow_argument(pdf_tokens[0])}"
+
+    if _contains_any(normalized, _VERIFY_WORKSPACE_KEYWORDS):
+        return "labai workflow verify-workspace"
+
+    if _contains_any(normalized, _ONBOARDING_KEYWORDS) or _contains_any(normalized, _OVERVIEW_KEYWORDS):
+        if any(token in normalized for token in ("repo", "repository", "project", "workspace", "new ra")):
+            return "labai workflow onboard-project"
+
+    if _looks_like_workspace_edit_request(normalized, raw_path_tokens):
+        escaped_prompt = prompt.strip().replace('"', '\\"')
+        return f'labai workflow edit-task "{escaped_prompt}"'
+
+    return ""
+
+
+def _extract_ask_path_tokens(prompt: str) -> tuple[str, ...]:
+    matches: list[str] = []
+    seen: set[str] = set()
+    for raw_match in re.finditer(r"[A-Za-z]:\\[^\r\n\"'<>]+", prompt):
+        token = raw_match.group(0).strip("`'\"()[]{}<>.,;")
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        matches.append(token)
+    for raw_match in _PATH_TOKEN_PATTERN.finditer(prompt):
+        token = raw_match.group("token").strip("`'\"()[]{}<>.,:;")
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        matches.append(token)
+    return tuple(matches[:8])
+
+
+def _extract_ask_pdf_tokens(prompt: str) -> tuple[str, ...]:
+    return tuple(token for token in _extract_ask_path_tokens(prompt) if token.lower().endswith(".pdf"))
+
+
+def _quote_workflow_argument(value: str) -> str:
+    escaped = value.replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def _find_by_basename(access_manager: WorkspaceAccessManager, basename: str) -> tuple[str, ...]:

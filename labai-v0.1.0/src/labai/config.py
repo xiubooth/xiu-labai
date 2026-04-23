@@ -27,6 +27,7 @@ SUPPORTED_FALLBACK_RUNTIMES = frozenset({"native"})
 SUPPORTED_MODEL_FAMILIES = frozenset({"qwen", "gpt-oss"})
 SUPPORTED_RESEARCH_MODES = frozenset(
     {
+        "general_chat",
         "repo_overview",
         "workspace_verification",
         "file_explain",

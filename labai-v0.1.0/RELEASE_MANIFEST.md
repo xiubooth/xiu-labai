@@ -132,23 +132,57 @@ Optional dependency:
 - local session, audit, output, and other dev-only traces
 - maintainer-only packaging helpers such as `scripts/package_release.py`, `scripts/verify_release_archive.py`, and `scripts/windows/package-release.ps1`
 
-## Verification Expectations For This Release
+## Verification Result For This Release
 
-The intended maintainer verification flow is:
+Maintainer verification completed on `2026-04-22`.
 
-1. run the repo gates and Phase 18 verifiers
-2. build the release zip with `scripts/windows/package-release.ps1`
-3. verify archive contents with `scripts/verify_release_archive.py`
-4. extract the zip to a fresh folder
-5. run `Launch-LabAI-Setup.cmd`
-6. rerun `scripts/windows/bootstrap-windows.ps1`
-7. run `scripts/windows/verify-install.ps1`
-8. confirm:
-   - `labai doctor`
-   - `labai tools`
-   - `labai ask "hello"`
-   - `labai workflow verify-workspace --preview`
-   - local profile + managed Claw runtime + no developer `claw-code` path
+Repo gates passed:
+
+- `python -m pytest -q`
+- `labai doctor`
+- `labai tools`
+- `labai ask -- "Say exactly HELLO and nothing else."`
+- `python scripts\verify_phase18_route1_hardening.py`
+- `python scripts\verify_phase18_route1_false_positive_guard.py`
+- `python scripts\verify_phase18_route2_mature_loop.py`
+- `python scripts\verify_phase18_route2_workflow_closure.py`
+- Phase 16 verifier scripts present in this repo also passed
+
+Archive verification passed:
+
+- `python scripts\verify_release_archive.py --archive dist\labai-v0.1.0.zip`
+- `archive_entries = 89`
+- `required_entries = 85`
+- `shipped_phase18_check_specs = 10`
+- `missing_required = []`
+- `forbidden_present = []`
+
+Fresh extracted install verification passed:
+
+- simulation root:
+  - `C:\Users\ASUS\Desktop\AI\.release-smoke\0.1.0-rerun\labai-v0.1.0`
+- one-click launcher:
+  - `Launch-LabAI-Setup.cmd -LauncherDir <extract>\.local-bin -SkipUserPathUpdate`
+- rerun bootstrap:
+  - `scripts/windows/bootstrap-windows.ps1 -LauncherDir <extract>\.local-bin -SkipUserPathUpdate`
+- shipped verification:
+  - `scripts/windows/verify-install.ps1 -LauncherDir <extract>\.local-bin`
+- extracted command checks passed:
+  - `labai doctor`
+  - `labai tools`
+  - `labai ask "hello"`
+  - `labai workflow verify-workspace --preview`
+- extracted dependency import check passed:
+  - `deps_ok`
+- extracted Phase 18 module import check passed:
+  - `phase18_modules_ok`
+- extracted final state:
+  - `active_profile = local`
+  - `active_generation_provider = local`
+  - `selected_runtime = claw`
+  - local ask used `runtime_fallback: none`
+  - managed Claw path stayed under `%LOCALAPPDATA%\LabAI\runtime\claw\claw.exe`
+  - no developer `claw-code` path remained in config
 
 ## Third-Party / Reference Content
 

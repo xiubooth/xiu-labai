@@ -3680,8 +3680,10 @@ def _synthetic_git_status_lines(
     modified_files: tuple[str, ...],
     created_files: tuple[str, ...],
 ) -> tuple[str, ...]:
-    lines = [f" M {path.replace('\\', '/')}" for path in modified_files]
-    lines.extend(f"?? {path.replace('\\', '/')}" for path in created_files)
+    normalized_modified = tuple(path.replace("\\", "/") for path in modified_files)
+    normalized_created = tuple(path.replace("\\", "/") for path in created_files)
+    lines = [f" M {path}" for path in normalized_modified]
+    lines.extend(f"?? {path}" for path in normalized_created)
     return tuple(lines)
 
 

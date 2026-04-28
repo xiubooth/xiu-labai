@@ -37,6 +37,22 @@
 - [ ] Confirm the release includes the full current `src/labai/**/*.py` source tree.
 - [ ] Confirm the release includes `.continue/checks/*.md` when they exist in the source repo.
 
+## Phase 19 macOS Scaffold
+
+- [ ] Treat macOS support as pre-packaging scaffold until a real Mac smoke test passes.
+- [ ] If a future package includes macOS files, verify:
+  - `Launch-LabAI-Setup.command`
+  - `scripts/mac/bootstrap-mac.sh`
+  - `scripts/mac/install-labai.sh`
+  - `scripts/mac/setup-local-ollama.sh`
+  - `scripts/mac/verify-install.sh`
+  - `templates/profiles/local-mac.toml`
+  - `templates/profiles/api-deepseek-mac.toml`
+  - `docs/INSTALL_MAC.md`
+  - `docs/MAC_SMOKE_TEST.md`
+  - `docs/TROUBLESHOOTING_MAC.md`
+- [ ] Do not describe macOS as production-ready until Claw, Ollama/Qwen, doctor, ask, and workflow preview pass on actual macOS hardware.
+
 ## Dependency Surface
 
 - [ ] Confirm default install dependencies include:
@@ -102,9 +118,9 @@
 - [ ] Run:
   - `powershell -ExecutionPolicy Bypass -File .\scripts\windows\package-release.ps1`
 - [ ] Confirm the archive path is:
-  - `dist/labai-v0.1.0.zip`
+  - `dist/labai-windows-v0.1.0.zip`
 - [ ] Run the direct archive verifier:
-  - `python scripts\verify_release_archive.py --archive dist\labai-v0.1.0.zip`
+  - `python scripts\verify_release_archive.py --archive dist\labai-windows-v0.1.0.zip`
 - [ ] Confirm the archive contains the required Phase 18 modules and shipped `.continue/checks`.
 
 ## Fresh Extracted Install Verification

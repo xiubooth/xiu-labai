@@ -15,7 +15,7 @@ Interactive terminal runs may now print short progress messages to `stderr` whil
 
 ## Recommended First Run
 
-Use the one-click bootstrap:
+Use the Windows one-click bootstrap:
 
 1. unzip the release
 2. double-click `Launch-LabAI-Setup.cmd`
@@ -62,6 +62,23 @@ These are local runtime files. They are excluded from the release package.
 The managed bundled Claw runtime is stored outside the repo at:
 
 - `%LOCALAPPDATA%\LabAI\runtime\claw\claw.exe`
+
+## macOS Validation Scaffold
+
+Phase 19 adds macOS scripts for future Mac validation. On a Mac:
+
+```sh
+chmod +x Launch-LabAI-Setup.command scripts/mac/*.sh
+./Launch-LabAI-Setup.command
+```
+
+Expected macOS local runtime path once a real macOS Claw binary is provided:
+
+- `~/Library/Application Support/LabAI/runtime/claw/claw`
+- launcher: `~/Library/Application Support/LabAI/bin/labai`
+- config template: `templates/profiles/local-mac.toml`
+
+The macOS path still requires real Mac smoke testing before it should be treated as a release-ready install.
 
 ## Working With PDFs
 

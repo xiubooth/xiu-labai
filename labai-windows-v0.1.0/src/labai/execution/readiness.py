@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from labai.config import LabaiConfig
+from labai.runtime.platform import detect_platform, get_platform_paths
 
 from .claw import _check_local_openai_endpoint, build_claw_doctor_command, resolve_claw_binary
 
@@ -53,22 +54,24 @@ class LocalRuntimeReport:
 
 
 def build_local_runtime_report(config: LabaiConfig) -> LocalRuntimeReport:
+    platform_name = detect_platform()
+    setup_script = _platform_setup_script(platform_name)
     source_repo_item = _detect_source_repo(config)
     workspace_item = _detect_workspace(config)
     git_item = _detect_command(
         "git",
         key="git",
-        install_hint="Install Git for Windows or add git.exe to PATH, then reopen PowerShell.",
+        install_hint=_git_install_hint(platform_name),
     )
     cargo_item = _detect_command(
         "cargo",
         key="cargo",
-        install_hint="Install Rust tooling with rustup, then reopen PowerShell so cargo is on PATH.",
+        install_hint=_cargo_install_hint(platform_name),
     )
     rustup_item = _detect_command(
         "rustup",
         key="rustup",
-        install_hint="Install rustup-init for Windows so Claw can be built from source.",
+        install_hint=_rustup_install_hint(platform_name),
     )
     claw_item = _detect_claw_binary(config, cargo_item, source_repo_item, workspace_item)
     if _uses_managed_claw_runtime(config, claw_item):
@@ -103,7 +106,7 @@ def build_local_runtime_report(config: LabaiConfig) -> LocalRuntimeReport:
         config.ollama.command,
         key="ollama_command",
         install_hint=(
-            "Install Ollama for Windows, start the app or service, then rerun scripts/windows/check-local-runtime.ps1 "
+            f"Install Ollama for {platform_name}, start it, then rerun {setup_script} "
             "or `labai doctor`."
         ),
     )
@@ -210,10 +213,7 @@ def _detect_claw_binary(
             status="misconfigured",
             detail=f"Configured Claw binary path was not found: {candidate}",
             location=str(candidate),
-            next_step=(
-                "Fix [claw].binary so it points to an existing claw.exe, or remove it and rely on "
-                "PATH or a configured source build."
-            ),
+            next_step=_claw_missing_next_step(),
         )
 
     if source_repo_item.status == "misconfigured":
@@ -236,19 +236,19 @@ def _detect_claw_binary(
 
     if source_repo_item.status == "detected" or workspace_item.status == "detected":
         next_step = (
-            "Run scripts/windows/bootstrap-claw.ps1 -Plan first, then use -Apply once the "
-            "Rust toolchain and source repo are ready."
+            "Use the platform bootstrap path first, then use the explicit source-build fallback only "
+            "after the Rust toolchain and source repo are ready."
         )
         if cargo_item.status != "ready":
             next_step = (
-                "Install Rust tooling (rustup/cargo), then run "
-                "scripts/windows/bootstrap-claw.ps1 -Plan."
+                "Install Rust tooling (rustup/cargo), then use the explicit developer source-build "
+                "fallback for Claw."
             )
         return DiagnosticItem(
             key="claw_binary",
             status="not_built",
             detail=(
-                "Claw source path is configured, but no built claw.exe was found under the "
+                "Claw source path is configured, but no built Claw binary was found under the "
                 f"{config.claw.build_profile} profile."
             ),
             next_step=next_step,
@@ -259,10 +259,22 @@ def _detect_claw_binary(
         key="claw_binary",
         status="not_installed",
         detail="No discoverable Claw binary was found on PATH or in configured build outputs.",
-        next_step=(
-            "Run Launch-LabAI-Setup.cmd or scripts/windows/bootstrap-windows.ps1 to provision the managed Claw runtime. "
-            "Use source-build settings only if you intentionally want the developer fallback path."
-        ),
+        next_step=_claw_missing_next_step(),
+    )
+
+
+def _claw_missing_next_step() -> str:
+    platform_name = detect_platform()
+    if platform_name == "macos":
+        return (
+            "Expected a bundled macOS Claw binary at runtime-assets/claw/macos-arm64/claw "
+            "or runtime-assets/claw/macos-x64/claw. Rerun scripts/mac/bootstrap-mac.sh "
+            "after adding the correct asset, or set LABAI_CLAW_BINARY to a real executable "
+            "macOS Claw binary. Rust source builds are maintainer-only."
+        )
+    return (
+        f"Run {_platform_setup_script(platform_name)} to provision the managed Claw runtime. "
+        "Use source-build settings only if you intentionally want the developer fallback path."
     )
 
 
@@ -379,8 +391,8 @@ def _detect_ollama_service(config: LabaiConfig) -> DiagnosticItem:
             status="not_running",
             detail=f"Ollama service is not reachable at {config.ollama.base_url}: {exc}",
             next_step=(
-                "Start the Ollama Windows app or service, then rerun "
-                "scripts/windows/verify-local-runtime.ps1 or `labai doctor`."
+                f"Start Ollama locally, then rerun {_platform_verify_script(detect_platform())} "
+                "or `labai doctor`."
             ),
         )
 
@@ -437,7 +449,7 @@ def _detect_required_models(
             status="not_running",
             detail="Required models cannot be verified until Ollama is reachable.",
             next_step=(
-                "Start Ollama first, then run scripts/windows/bootstrap-ollama-qwen.ps1 -Plan "
+                f"Start Ollama first, then run {_platform_setup_script(detect_platform())} "
                 "to see the exact model pull commands."
             ),
             metadata={"required_models": config.ollama.required_models},
@@ -458,7 +470,7 @@ def _detect_required_models(
                 f"{', '.join(missing_models)}"
             ),
             next_step=(
-                "Run scripts/windows/bootstrap-ollama-qwen.ps1 -Plan for pull commands, "
+                f"Run {_platform_ollama_script(detect_platform())} for pull commands, "
                 "then rerun it with -Apply once you are ready."
             ),
             metadata={
@@ -571,5 +583,48 @@ def _uses_managed_claw_runtime(config: LabaiConfig, claw_item: DiagnosticItem) -
     if claw_item.status != "ready":
         return False
 
-    configured_binary = config.claw.binary.replace("\\", "/").lower()
-    return "labai/runtime/claw/claw.exe" in configured_binary
+    configured_binary = Path(os.path.expandvars(os.path.expanduser(config.claw.binary)))
+    managed_claw = get_platform_paths(project_root=config.project_root).managed_claw_path
+    return _same_config_path(configured_binary, managed_claw)
+
+
+def _same_config_path(left: Path, right: Path) -> bool:
+    left_text = left.as_posix().lower() if os.name == "nt" else left.as_posix()
+    right_text = right.as_posix().lower() if os.name == "nt" else right.as_posix()
+    return left_text == right_text
+
+
+def _platform_setup_script(platform_name: str) -> str:
+    if platform_name == "macos":
+        return "scripts/mac/bootstrap-mac.sh"
+    return "Launch-LabAI-Setup.cmd or scripts/windows/bootstrap-windows.ps1"
+
+
+def _platform_verify_script(platform_name: str) -> str:
+    if platform_name == "macos":
+        return "scripts/mac/verify-install.sh"
+    return "scripts/windows/verify-install.ps1"
+
+
+def _platform_ollama_script(platform_name: str) -> str:
+    if platform_name == "macos":
+        return "scripts/mac/setup-local-ollama.sh"
+    return "scripts/windows/setup-local-ollama.ps1"
+
+
+def _git_install_hint(platform_name: str) -> str:
+    if platform_name == "macos":
+        return "Install Git with Xcode Command Line Tools or Homebrew, then reopen Terminal."
+    return "Install Git for Windows or add git.exe to PATH, then reopen PowerShell."
+
+
+def _cargo_install_hint(platform_name: str) -> str:
+    if platform_name == "macos":
+        return "Install Rust tooling with rustup if you intentionally use the Claw source-build fallback."
+    return "Install Rust tooling with rustup, then reopen PowerShell so cargo is on PATH."
+
+
+def _rustup_install_hint(platform_name: str) -> str:
+    if platform_name == "macos":
+        return "Install rustup only for the explicit developer Claw source-build fallback."
+    return "Install rustup-init for Windows so Claw can be built from source."

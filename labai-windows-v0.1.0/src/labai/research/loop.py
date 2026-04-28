@@ -9636,16 +9636,16 @@ def _build_slot_grounded_compare_answer(
     if response_style == "continuous_prose":
         sections: list[str] = []
         for slot_name in requested_slots:
-            comparisons = [
-                f"{Path(str(document_note.get('source_path', '(unknown document)'))).name}: "
-                f"{_slot_summary_sentence(
+            comparisons: list[str] = []
+            for document_note in document_notes:
+                source_name = Path(str(document_note.get("source_path", "(unknown document)"))).name
+                summary = _slot_summary_sentence(
                     document_note,
                     slot_name,
                     response_language=response_language,
                     paper_output_profile=paper_output_profile,
-                )}"
-                for document_note in document_notes
-            ]
+                )
+                comparisons.append(f"{source_name}: {summary}")
             if response_language == "zh-CN":
                 sections.append(
                     f"{_slot_display_name(slot_name, response_language)}\u65b9\u9762\uff0c"
@@ -9665,15 +9665,13 @@ def _build_slot_grounded_compare_answer(
         lines.append(f"{_slot_display_name(slot_name, response_language)}:")
         for document_note in document_notes:
             source_name = Path(str(document_note.get("source_path", "(unknown document)"))).name
-            lines.append(
-                f"- {source_name}: "
-                f"{_slot_summary_sentence(
-                    document_note,
-                    slot_name,
-                    response_language=response_language,
-                    paper_output_profile=paper_output_profile,
-                )}"
+            summary = _slot_summary_sentence(
+                document_note,
+                slot_name,
+                response_language=response_language,
+                paper_output_profile=paper_output_profile,
             )
+            lines.append(f"- {source_name}: {summary}")
     return "\n".join(lines)
 
 
@@ -11716,6 +11714,11 @@ def _run_claw_route(
                         text=response.text,
                     )
             if config.runtime.fallback_runtime == "native":
+                if progress_reporter is not None:
+                    progress_reporter.emit(
+                        f"fallback used: runtime=native provider={config.default_provider} "
+                        f"reason={str(exc)[:180]}"
+                    )
                 return _run_native_route(
                     config,
                     prompt,
@@ -11732,6 +11735,7 @@ def _run_claw_route(
                         fallback_runtime=config.runtime.fallback_runtime,
                         reason=str(exc),
                     ),
+                    progress_reporter=progress_reporter,
                 )
             raise
 
@@ -11753,6 +11757,11 @@ def _run_claw_route(
         )
 
     if config.runtime.fallback_runtime == "native":
+        if progress_reporter is not None:
+            progress_reporter.emit(
+                f"fallback used: runtime=native provider={config.default_provider} "
+                f"reason={health.detail[:180]}"
+            )
         return _run_native_route(
             config,
             prompt,
@@ -11769,6 +11778,7 @@ def _run_claw_route(
                 fallback_runtime=config.runtime.fallback_runtime,
                 reason=health.detail,
             ),
+            progress_reporter=progress_reporter,
         )
 
     raise RuntimeAdapterError(health.detail)

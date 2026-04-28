@@ -65,7 +65,12 @@ CLAW_REFERENCE_FACTS: Mapping[str, Any] = MappingProxyType(
         "local_endpoint_env": "OPENAI_BASE_URL",
         "ollama_local_endpoint": "http://127.0.0.1:11434/v1",
         "deepseek_endpoint": "https://api.deepseek.com/v1",
-        "qwen_local_guidance": "Use plain local names such as qwen2.5 or qwen2.5-coder; avoid qwen/ and qwen- prefixes that route to DashScope.",
+        "qwen_local_guidance": (
+            "LabAI config keeps plain local Ollama names such as qwen2.5:7b, "
+            "then passes them to Claw as openai/<model> with OPENAI_BASE_URL "
+            "pointing at the local Ollama OpenAI-compatible endpoint. Avoid "
+            "qwen/ and qwen- prefixes because those route to cloud Qwen/DashScope."
+        ),
     }
 )
 
@@ -224,56 +229,61 @@ class ClawRuntimeAdapter:
 
         if progress_reporter is not None:
             progress_reporter.emit(f"model call started: runtime=claw model={selected_model}")
-        with (
-            progress_reporter.heartbeat(
-                waiting_message="still waiting for model response... {elapsed:.0f}s",
-                failure_message="model call failed: runtime=claw",
-                completion_message="model call completed: runtime=claw",
-            )
-            if progress_reporter is not None
-            else nullcontext()
-        ):
-            completed = _run_command(
-                command,
-                cwd=config.workspace.active_workspace_root,
-                env=_build_runtime_env(config),
-                timeout_seconds=config.claw.ask_timeout_seconds,
-            )
-        if completed.returncode != 0:
-            raise RuntimeAdapterError(_render_process_failure(completed))
+        try:
+            with (
+                progress_reporter.heartbeat(
+                    waiting_message="still waiting for model response... {elapsed:.0f}s",
+                )
+                if progress_reporter is not None
+                else nullcontext()
+            ):
+                completed = _run_command(
+                    command,
+                    cwd=config.workspace.active_workspace_root,
+                    env=_build_runtime_env(config),
+                    timeout_seconds=config.claw.ask_timeout_seconds,
+                )
+            if completed.returncode != 0:
+                raise RuntimeAdapterError(_render_process_failure(completed))
 
-        payload = _load_json_payload(completed.stdout)
-        text = _extract_text(payload)
-        if not text:
-            raise RuntimeAdapterError(
-                "Claw returned JSON output, but no answer text could be extracted."
+            payload = _load_json_payload(completed.stdout)
+            text = _extract_text(payload)
+            if not text:
+                raise RuntimeAdapterError(
+                    "Claw returned JSON output, but no answer text could be extracted."
+                )
+            text = normalize_answer_text(
+                text,
+                response_language=request.response_language,
+                response_style=request.response_style,
+                include_explicit_evidence_refs=request.include_explicit_evidence_refs,
             )
-        text = normalize_answer_text(
-            text,
-            response_language=request.response_language,
-            response_style=request.response_style,
-            include_explicit_evidence_refs=request.include_explicit_evidence_refs,
-        )
-        if needs_style_repair(
-            text,
-            prompt=request.prompt,
-            response_language=request.response_language,
-            response_style=request.response_style,
-            include_explicit_evidence_refs=request.include_explicit_evidence_refs,
-        ):
-            text = _repair_text_response(
-                config,
-                binary_path,
-                model=selected_model,
-                request=request,
-                answer_text=text,
+            if needs_style_repair(
+                text,
+                prompt=request.prompt,
+                response_language=request.response_language,
+                response_style=request.response_style,
+                include_explicit_evidence_refs=request.include_explicit_evidence_refs,
+            ):
+                text = _repair_text_response(
+                    config,
+                    binary_path,
+                    model=selected_model,
+                    request=request,
+                    answer_text=text,
+                )
+            text = normalize_answer_text(
+                text,
+                response_language=request.response_language,
+                response_style=request.response_style,
+                include_explicit_evidence_refs=request.include_explicit_evidence_refs,
             )
-        text = normalize_answer_text(
-            text,
-            response_language=request.response_language,
-            response_style=request.response_style,
-            include_explicit_evidence_refs=request.include_explicit_evidence_refs,
-        )
+        except RuntimeAdapterError as exc:
+            if progress_reporter is not None:
+                progress_reporter.emit(f"model call failed: runtime=claw reason={_snippet(str(exc), limit=180)}")
+            raise
+        if progress_reporter is not None:
+            progress_reporter.emit("model call completed: runtime=claw fallback=none")
         strict_literal = _extract_strict_literal_response(request.prompt)
         if strict_literal is not None:
             text = strict_literal
@@ -296,7 +306,7 @@ class ClawRuntimeAdapter:
 
 
 def resolve_claw_binary(config: LabaiConfig) -> Path | None:
-    configured = config.claw.binary.strip()
+    configured = os.environ.get("LABAI_CLAW_BINARY", "").strip() or config.claw.binary.strip()
     explicit_path = Path(configured)
 
     if _looks_like_path(configured):
@@ -623,6 +633,8 @@ def _claw_smoke_timeout_seconds(config: LabaiConfig) -> int:
 
 def _classify_claw_smoke_failure(detail: str) -> str:
     lowered = detail.lower()
+    if "invalid model syntax" in lowered or "expected provider/model" in lowered:
+        return "claw_model_syntax_failed"
     if "max_tokens" in lowered:
         return "max_tokens_invalid"
     if any(
@@ -1339,11 +1351,29 @@ def _select_model(
             preferred_model=preferred_model,
         )
     if preferred_model:
-        return preferred_model
+        return _normalize_local_claw_model(preferred_model)
     prompt_lower = prompt.lower()
     if any(token in prompt_lower for token in ("code", "python", "function", "class", "module", "test")):
-        return config.models.code_model
-    return config.models.general_model
+        return _normalize_local_claw_model(config.models.code_model)
+    return _normalize_local_claw_model(config.models.general_model)
+
+
+def _normalize_local_claw_model(model: str) -> str:
+    normalized = model.strip()
+    lowered = normalized.lower()
+    if not normalized:
+        return normalized
+    if lowered.startswith("openai/"):
+        return normalized
+    if lowered.startswith("qwen/") or lowered.startswith("qwen-"):
+        raise RuntimeAdapterError(
+            "Local Claw/Ollama mode must not use qwen/ or qwen- cloud model syntax. "
+            "Use a plain Ollama model name such as qwen2.5:7b; LabAI will pass it "
+            "to Claw as openai/qwen2.5:7b against the local OPENAI_BASE_URL."
+        )
+    if "/" in normalized:
+        return normalized
+    return f"openai/{normalized}"
 
 
 def _looks_like_path(command: str) -> bool:

@@ -28,10 +28,23 @@ Set it for the current PowerShell session:
 $env:DEEPSEEK_API_KEY="your_api_key_here"
 ```
 
+Set it for the current macOS shell session:
+
+```sh
+export DEEPSEEK_API_KEY="your_api_key_here"
+```
+
 Switch to the API profile:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\windows\setup-api-provider.ps1 -Apply
+labai doctor
+```
+
+On macOS, after Phase 19 scaffold setup:
+
+```sh
+scripts/mac/setup-api-provider.sh --apply
 labai doctor
 ```
 

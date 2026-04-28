@@ -2,8 +2,10 @@
 
 - Product: `labai`
 - Version: `0.1.0`
-- Release archive: `dist/labai-v0.1.0.zip`
-- Release style: clean Windows-first RA/professor-facing package
+- Release archive: `dist/labai-windows-v0.1.0.zip`
+- Release folder: `labai-windows-v0.1.0`
+- Release style: clean Windows RA/professor-facing package
+- macOS package metadata lives in `RELEASE_MACOS_MANIFEST.md`
 - Default installed state after one-click bootstrap:
   - `active_profile = local`
   - `active_generation_provider = local`
@@ -145,7 +147,7 @@ Optional dependency:
 
 ## Verification Result For This Release
 
-Maintainer verification completed on `2026-04-22`.
+Maintainer verification completed on `2026-04-23`.
 
 Repo gates passed:
 
@@ -161,9 +163,9 @@ Repo gates passed:
 
 Archive verification passed:
 
-- `python scripts\verify_release_archive.py --archive dist\labai-v0.1.0.zip`
-- `archive_entries = 89`
-- `required_entries = 85`
+- `python scripts\verify_release_archive.py --archive dist\labai-windows-v0.1.0.zip`
+- `archive_entries = 90`
+- `required_entries = 86`
 - `shipped_phase18_check_specs = 10`
 - `missing_required = []`
 - `forbidden_present = []`
@@ -171,7 +173,7 @@ Archive verification passed:
 Fresh extracted install verification passed:
 
 - simulation root:
-  - `C:\Users\ASUS\Desktop\AI\.release-smoke\0.1.0-rerun\labai-v0.1.0`
+  - `C:\Users\ASUS\Desktop\labai-release-smoke\labai-windows-v0.1.0`
 - one-click launcher:
   - `Launch-LabAI-Setup.cmd -LauncherDir <extract>\.local-bin -SkipUserPathUpdate`
 - rerun bootstrap:
@@ -194,6 +196,7 @@ Fresh extracted install verification passed:
   - local ask used `runtime_fallback: none`
   - managed Claw path stayed under `%LOCALAPPDATA%\LabAI\runtime\claw\claw.exe`
   - no developer `claw-code` path remained in config
+  - local performance smoke classification: `local_ready`
 
 ## Third-Party / Reference Content
 

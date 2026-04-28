@@ -2,7 +2,7 @@
 
 ## Release-Facing Profiles
 
-`labai` ships three first-release profiles for non-expert setup:
+The Windows release ships three first-release profiles for non-expert setup:
 
 1. `fallback`
 2. `local`
@@ -88,6 +88,25 @@ Every profile switch backs up the previous `.labai/config.toml` to:
 - `.labai/config.backups/`
 
 Profile switching does not delete user data.
+
+## macOS Templates
+
+Phase 19 adds macOS validation templates:
+
+- `templates/profiles/local-mac.toml`
+- `templates/profiles/api-deepseek-mac.toml`
+
+These avoid Windows-only paths such as `%LOCALAPPDATA%`, `.exe`, and `.venv\Scripts`. The macOS local profile points Claw at:
+
+```text
+$HOME/Library/Application Support/LabAI/runtime/claw/claw
+```
+
+API keys remain environment-only on macOS:
+
+```sh
+export DEEPSEEK_API_KEY="your_key_here"
+```
 
 ## How `labai doctor` Reports Profiles
 

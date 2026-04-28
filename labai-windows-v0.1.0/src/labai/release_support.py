@@ -9,8 +9,10 @@ import zipfile
 
 
 RELEASE_VERSION = "0.1.0"
-RELEASE_ARCHIVE_NAME = f"labai-v{RELEASE_VERSION}.zip"
+RELEASE_FOLDER_NAME = f"labai-windows-v{RELEASE_VERSION}"
+RELEASE_ARCHIVE_NAME = f"{RELEASE_FOLDER_NAME}.zip"
 DEFAULT_RELEASE_IGNORE_PATH = Path(".releaseignore")
+WINDOWS_RELEASE_README_SOURCE = Path("docs/release/README_WINDOWS.md")
 
 ALLOWED_RELEASE_TOP_LEVEL_FILES = frozenset(
     {
@@ -18,8 +20,8 @@ ALLOWED_RELEASE_TOP_LEVEL_FILES = frozenset(
         "README.md",
         ".env.example",
         "pyproject.toml",
-        "RELEASE_MANIFEST.md",
         "RELEASE_CHECKLIST.md",
+        "RELEASE_MANIFEST.md",
     }
 )
 ALLOWED_RELEASE_TOP_LEVEL_DIRS = frozenset(
@@ -243,6 +245,7 @@ def stage_release_tree(
         destination_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_path, destination_path)
         copied.append(relative_path.as_posix())
+    _write_windows_release_readme(resolved_root, resolved_staging)
     return tuple(copied)
 
 
@@ -264,8 +267,12 @@ def create_release_archive(
     if resolved_archive.exists():
         resolved_archive.unlink()
     with zipfile.ZipFile(resolved_archive, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive_root = resolved_archive.stem
         for relative_path in copied:
-            archive.write((normalize_repo_root(staging_root) / relative_path), arcname=relative_path)
+            archive.write(
+                (normalize_repo_root(staging_root) / relative_path),
+                arcname=PurePosixPath(archive_root, relative_path).as_posix(),
+            )
     validate_release_archive(
         resolved_archive,
         repo_root=resolved_root,
@@ -295,7 +302,8 @@ def validate_release_archive(
         )
 
     with zipfile.ZipFile(resolved_archive, mode="r") as archive:
-        names = tuple(sorted(name.rstrip("/") for name in archive.namelist() if name and not name.endswith("/")))
+        raw_names = tuple(sorted(name.rstrip("/") for name in archive.namelist() if name and not name.endswith("/")))
+    names = _strip_archive_root(raw_names, expected_root=resolved_archive.stem)
     required_files = required_release_files(normalize_repo_root(repo_root)) if repo_root is not None else STATIC_REQUIRED_RELEASE_FILES
     missing = [path for path in required_files if path not in names]
     if missing:
@@ -341,6 +349,25 @@ def should_exclude_release_path(
         if _matches_release_pattern(candidate, pattern, is_dir=is_dir):
             return True
     return False
+
+
+def _write_windows_release_readme(repo_root: Path, staging_root: Path) -> None:
+    source = repo_root / WINDOWS_RELEASE_README_SOURCE
+    if not source.is_file():
+        raise RuntimeError(f"Windows release README template is missing: {source}")
+    shutil.copy2(source, staging_root / "README.md")
+
+
+def _strip_archive_root(names: tuple[str, ...], *, expected_root: str) -> tuple[str, ...]:
+    prefix = expected_root.rstrip("/") + "/"
+    if names and all(name.startswith(prefix) for name in names):
+        return tuple(sorted(name[len(prefix) :] for name in names))
+    roots = {name.split("/", 1)[0] for name in names if "/" in name}
+    if len(roots) == 1 and all("/" in name for name in names):
+        root = next(iter(roots))
+        common_prefix = root + "/"
+        return tuple(sorted(name[len(common_prefix) :] for name in names))
+    return names
 
 
 def _matches_release_pattern(candidate: PurePosixPath, pattern: str, *, is_dir: bool) -> bool:

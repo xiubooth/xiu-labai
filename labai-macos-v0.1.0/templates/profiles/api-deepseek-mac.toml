@@ -1,0 +1,91 @@
+# macOS API profile for Phase 19 validation.
+# Secrets stay in environment variables; do not write a real API key here.
+
+[app]
+active_profile = "api-deepseek"
+default_provider = "deepseek"
+fallback_policy = "fallback_to_mock"
+active_generation_provider = "deepseek"
+
+[runtime]
+runtime = "claw"
+fallback_runtime = "native"
+bootstrap_policy = "guided_setup"
+not_ready_policy = "fallback_to_native"
+
+[paths]
+sessions_dir = ".labai/sessions"
+audit_log = ".labai/audit/audit.jsonl"
+outputs_dir = ".labai/outputs"
+
+[models]
+default_model_family = "qwen"
+general_model = "qwen2.5:7b"
+code_model = "qwen2.5-coder:7b"
+
+[mock]
+response_prefix = "Mock response"
+
+[research]
+mode_override = ""
+
+[output]
+console_mode = "verbose"
+
+[workspace]
+access_policy = "allowlisted_workspace_rw"
+auto_detect_cwd = true
+allowed_workspace_roots = []
+allowed_paper_roots = []
+allow_absolute_paths = true
+edit_mode = "auto_edit"
+same_folder_deliverables = true
+deny_roots = []
+
+[claw]
+binary = "$HOME/Library/Application Support/LabAI/runtime/claw/claw"
+source_repo_path = ""
+workspace_path = ""
+build_profile = "release"
+output_format = "json"
+permission_mode = "read-only"
+allowed_tools = ["read", "glob"]
+health_timeout_seconds = 10
+ask_timeout_seconds = 600
+
+[ollama]
+command = "ollama"
+model = "qwen2.5:7b"
+required_models = ["qwen3-embedding:0.6b"]
+base_url = "http://127.0.0.1:11434"
+openai_base_url = "http://127.0.0.1:11434/v1"
+openai_api_key = "local-dev-token"
+timeout_seconds = 30
+
+[providers.deepseek]
+enabled = true
+base_url = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_API_KEY"
+general_model = "deepseek-chat"
+code_model = "deepseek-chat"
+reasoning_model = "deepseek-reasoner"
+timeout_seconds = 120
+max_tokens = 8192
+smoke_max_tokens = 256
+
+[papers]
+library_roots = ["papers"]
+runtime_root = ".labai/library"
+manifests_dir = ".labai/library/manifests"
+extracted_dir = ".labai/library/extracted"
+chunks_dir = ".labai/library/chunks"
+index_dir = ".labai/library/index"
+parser_preference = "pymupdf_then_pypdf"
+embedding_model = "qwen3-embedding:0.6b"
+embedding_fallback_model = "embeddinggemma"
+chunk_size = 900
+chunk_overlap = 150
+retrieval_top_k = 6
+reingest_policy = "if_changed"
+low_text_policy = "mark_ocr_required"
+min_page_text_chars = 80
